@@ -7,7 +7,7 @@ import zlib
 
 class FacebookSuggestedPageAPI:
     _cookie = open('cookie.txt', 'r').readline()
-    def query(self,cookie=_cookie):
+    def querySuggestions(self,cookie=_cookie,pageId='838617286180599'):
         # build request header
         # as realistically as possible to mimic browser
         headers = {
@@ -22,12 +22,17 @@ class FacebookSuggestedPageAPI:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.143 Safari/537.36"
         }
         
-        res = requests.get("https://www.facebook.com/pages/?ref=page_suggestions_on_liking_refresh&frompageid=838617286180599", verify=False, headers=headers )
+        res = requests.get("https://www.facebook.com/pages/?ref=page_suggestions_on_liking_refresh&frompageid=" + str(pageId), verify=False, headers=headers )
         res.encoding  = "utf-8"
-        return res.text
+        body = res.text
+        matches = re.findall(r'pageID:([0-9]+),pageName:"([^"]+)"', body)
+        A = []
+        for m in matches:
+            A.append(m)
+        return A
 
 fsp = FacebookSuggestedPageAPI()
-body = fsp.query()
-matches = re.findall(r'pageID:([0-9]+),pageName:"([^"]+)"', body)
-for m in matches:
-    print(m)
+sugseed = fsp.querySuggestions()
+for sug in sugseed:
+   A = fsp.querySuggestions(pageId=sug[0]) 
+   print(A)
