@@ -2,7 +2,7 @@ import json
 import requests
 import json
 import sys, os
-import pika, re
+import pika, re,base64
 import zlib
 from bs4 import BeautifulSoup
 from pymongo import MongoClient
@@ -71,8 +71,13 @@ class StokaInstance:
     # Processing of the object in each iteration of pop()
     # object = User object (contains id, and username etc.)
     def process(self, object):
-        self.astoka_progress = self.astoka_progress + 1
-        self.save(self.fbHorse.getPageData(object, self.cookie))
+        try:
+            pdat = self.fbHorse.getPageData(object, self.cookie)
+            self.astoka_progress = self.astoka_progress + 1
+            self.save(pdat)
+        except Exception:
+            self.astoka_error = self.astoka_error + 1
+
         print("@astoka.progress ", self.astoka_progress)
         print("@astoka.error ", self.astoka_error)
 
@@ -210,7 +215,11 @@ if __name__ == '__main__':
     RABBIT_HOST = os.getenv('RABBIT_HOST', 'localhost')
     SEED_PAGE_NAME = os.getenv('SEED_ID', 'prachyagraphic')
     GROUP_NAME = os.getenv('GROUP_NAME', 'test')
-    COOKIE = os.getenv('COOKIE')
+    COOKIE = os.getenv('COOKIE', '')
+
+    if len(COOKIE) > 1:
+        print(COOKIE)
+        COOKIE = base64.b64decode(COOKIE).decode('ascii')
 
     print("using configuration", RABBIT_HOST, RABBIT_PWD, RABBIT_USR, int(RABBIT_PORT))
 
