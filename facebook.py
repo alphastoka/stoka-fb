@@ -5,14 +5,101 @@ import sys, os
 import pika, re
 import zlib
 from bs4 import BeautifulSoup
+from pymongo import MongoClient
+
 requests.packages.urllib3.disable_warnings()
 
-class FacebookSuggestedPageAPI:
+class StokaInstance:
+    STORAGE = {}
+    def __init__(self, rabbit_mq_connection, seed_page_object, group_name="fb_default_stoka", media_max= 12):
+        self.fbHorse = FacebookHorseShitAPI()
+        self.group_name = group_name;
+        self.rabbit_channel = rabbit_mq_connection.channel();
+        self.rabbit_channel.queue_declare(queue=group_name,durable=True)
+        self.mongo_client = MongoClient("mongodb://cloud.alphastoka.com:27017")
+        self.mongo_db = self.mongo_client['stoka_' + group_name]
+
+        # seed the queue
+        self.seed_page_object = seed_page_object
+        self.astoka_progress = 0
+        self.astoka_error = 0
+        self.pushQ(seed_page_object)
+            
+    
+    # check if it's in mongo or in some sort of fast memoryview
+    # this is for preventing dupe , it's not 100% proof but it's better than nthing
+    def inStorage(self, object):
+        return object["id"] in self.STORAGE
+    
+    # push object to work queue
+    # so other can pick up this object and populate the queue
+    # with the object's follower
+    def pushQ(self, object):
+        self.rabbit_channel.basic_publish(exchange='',
+                      routing_key=self.group_name,
+                      body=json.dumps(object),
+                      properties=pika.BasicProperties(
+                         delivery_mode = 2, 
+                      ))
+
+    def _rabbit_consume_callback(self, ch, method, properties, body):
+        # Called on pop done
+        # this is async pop callback
+        ch.basic_ack(delivery_tag = method.delivery_tag)
+        p = json.loads(body.decode("utf-8") )
+
+        F = self.fbHorse.querySuggestions(pageId=p["id"])
+
+        if F is None or len(F) == 0:
+            return
+        
+        for f in F:
+            if self.inStorage(f):
+                continue
+            
+            self.pushQ(f)
+            self.process(f)
+
+    def popQ(self):
+        print("Popping Q")
+        self.rabbit_channel.basic_qos(prefetch_count=1)
+        self.rabbit_channel.basic_consume(self._rabbit_consume_callback,
+                      queue=self.group_name)
+        # this is blocking (forever)
+        self.rabbit_channel.start_consuming()
+
+    # Processing of the object in each iteration of pop()
+    # object = User object (contains id, and username etc.)
+    def process(self, object):
+        self.astoka_progress = self.astoka_progress + 1
+        self.save(self.fbHorse.getPageData(object))
+        print("@astoka.progress ", self.astoka_progress)
+        print("@astoka.error ", self.astoka_error)
+
+  # persist to mongodb
+    def save(self, object):
+        # short term memory checking if we have seen this
+        self.STORAGE[object["id"]] = True
+        try:
+            result = self.mongo_db.facebook.insert_one(object)
+            print("[x] Persisting %s " % object["title"])
+        except Exception as ex:
+            self.astoka_error = self.astoka_error + 1
+            print("[o] Exception while saving to mongo (might be duplicate)", ex)
+    
+    # entry point
+    def run(self):
+        #do work!
+        self.popQ()
+
+
+class FacebookHorseShitAPI:
     _cookie = open('cookie.txt', 'r').readline()
 
-    def getPageData(self, cookie=_cookie, pageLink="https://www.facebook.com/donlaima/"):
+    def getPageData(self, object, cookie=_cookie):
         #
         # Parse page data
+        # object: relationship object given by querySuggestion
         #
         headers = {
             "accept-encoding": "utf-8",
@@ -25,7 +112,7 @@ class FacebookSuggestedPageAPI:
             "cache-control" : "max-age=0",
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.143 Safari/537.36"
         }
-        res = requests.get(pageLink, verify=False, headers=headers)
+        res = requests.get(object["url"], verify=False, headers=headers)
         res.encoding  = "utf-8"
 
         #find match for category 
@@ -41,20 +128,26 @@ class FacebookSuggestedPageAPI:
         # find regex match for page name
         dmatches = re.findall(r'ownerName:"([^"]+)"', res.text)
         # find regex match for page description
-        lmatch = re.findall(r'([0-9,]+)', meta_description_content)
+        lmatch = re.findall(r'([0-9,]+) likes', meta_description_content)
+        tmatch = re.findall(r'([0-9,]+) talking', meta_description_content)
         # find regex match for post description
         pmatch = re.findall(r'{body:{text:"([^"]+)', res.text)
 
+        print(meta_description_content, lmatch[0])
         return {
             "title": dmatches[0],
             "category": matches[0],
             "description": meta_description_content,
             "likes": int(lmatch[0].replace(",", "")),
-            "mentions": int(lmatch[1].replace(",", ""))
+            "mentions": int(tmatch[0].replace(",", "")),
+            "url": object["url"],
+            "_title": object["title"],
+            "id": object["id"]
         }
         
     def querySuggestions(self,cookie=_cookie,pageId='838617286180599'):
-        #
+        print("querying", pageId)
+
         # Query suggestions given page id
         # returns dict of (pageId, pageName, pageLink)
 
@@ -72,10 +165,11 @@ class FacebookSuggestedPageAPI:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.143 Safari/537.36"
         }
         
-        res = requests.get("https://www.facebook.com/pages/?ref=page_suggestions_on_liking_refresh&frompageid=" + str(pageId), verify=False, headers=headers )
+        url = "https://www.facebook.com/pages/?frompageid=" + str(pageId)
+        print(url)
+        res = requests.get(url, verify=False, headers=headers )
         res.encoding  = "utf-8"
         body = res.text
-        
 
         # find regex matches for 
         # pageID: string, pageName: string, pageProfileName: some sort of facebook's dom identifier
@@ -102,18 +196,42 @@ class FacebookSuggestedPageAPI:
             datum[2] = (alphaTagElem.get('href'))
 
             A.append({
-                "pageId": datum[0],
-                "pageTitle": datum[1],
-                "pageUrl": datum[2]
+                "id": datum[0],
+                "title": datum[1],
+                "url": datum[2]
             })
             
         return A
 
-fsp = FacebookSuggestedPageAPI()
-# pd = fsp.getPageData()
-# print(pd)
-sugseed = fsp.querySuggestions()
-print(sugseed)
-# for sug in sugseed:
-#    A = fsp.querySuggestions(pageId=sug[0]) 
-#    print(A)
+
+if __name__ == '__main__':
+    RABBIT_USR = os.getenv('RABBIT_USR', "rabbitmq")
+    RABBIT_PWD = os.getenv('RABBIT_PWD', "Nc77WrHuAR58yUPl")
+    RABBIT_PORT = os.getenv('RABBIT_PORT', 32774)
+    RABBIT_HOST = os.getenv('RABBIT_HOST', 'localhost')
+    SEED_PAGE_NAME = os.getenv('SEED_ID', 'prachyagraphic')
+    GROUP_NAME = os.getenv('GROUP_NAME', 'test')
+
+    print("using configuration", RABBIT_HOST, RABBIT_PWD, RABBIT_USR, int(RABBIT_PORT))
+
+    credentials = pika.PlainCredentials(RABBIT_USR, RABBIT_PWD)
+    print("Connecting to Rabbit..")
+    connection = pika.BlockingConnection(pika.ConnectionParameters(
+               RABBIT_HOST, port=int(RABBIT_PORT), credentials=credentials))
+            
+    print("Finding seed id..")
+    seed_url = "https://www.facebook.com/%s/" % (SEED_PAGE_NAME,)
+    #determine seed id from provided seed username
+    res = requests.get(seed_url, verify=False)
+    res.encoding  = "utf-8"
+    soup = BeautifulSoup(res.text, "html.parser")
+    meta = soup.select("meta[property='al:ios:url']")
+    seed_id = meta[0].get("content").split("=")[-1]
+
+    print("Starting Stoka with seed %s.." % (seed_id,))
+    instance = StokaInstance(connection,seed_page_object={
+        "id": seed_id,
+        "url": seed_url   
+    }, group_name=GROUP_NAME)
+
+    instance.run()
