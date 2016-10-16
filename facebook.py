@@ -11,14 +11,14 @@ requests.packages.urllib3.disable_warnings()
 
 class StokaInstance:
     STORAGE = {}
-    def __init__(self, rabbit_mq_connection, seed_page_object, group_name="fb_default_stoka", media_max= 12):
+    def __init__(self, rabbit_mq_connection, seed_page_object, group_name="fb_default_stoka", cookie=""):
         self.fbHorse = FacebookHorseShitAPI()
         self.group_name = group_name;
         self.rabbit_channel = rabbit_mq_connection.channel();
         self.rabbit_channel.queue_declare(queue=group_name,durable=True)
         self.mongo_client = MongoClient("mongodb://cloud.alphastoka.com:27017")
         self.mongo_db = self.mongo_client['stoka_' + group_name]
-
+        self.cookie = cookie
         # seed the queue
         self.seed_page_object = seed_page_object
         self.astoka_progress = 0
@@ -48,7 +48,7 @@ class StokaInstance:
         ch.basic_ack(delivery_tag = method.delivery_tag)
         p = json.loads(body.decode("utf-8") )
 
-        F = self.fbHorse.querySuggestions(pageId=p["id"])
+        F = self.fbHorse.querySuggestions(cookie=self.cookie,pageId=p["id"])
 
         if F is None or len(F) == 0:
             return
@@ -72,7 +72,7 @@ class StokaInstance:
     # object = User object (contains id, and username etc.)
     def process(self, object):
         self.astoka_progress = self.astoka_progress + 1
-        self.save(self.fbHorse.getPageData(object))
+        self.save(self.fbHorse.getPageData(object, self.cookie))
         print("@astoka.progress ", self.astoka_progress)
         print("@astoka.error ", self.astoka_error)
 
@@ -94,9 +94,8 @@ class StokaInstance:
 
 
 class FacebookHorseShitAPI:
-    _cookie = open('cookie.txt', 'r').readline()
 
-    def getPageData(self, object, cookie=_cookie):
+    def getPageData(self, object, cookie):
         #
         # Parse page data
         # object: relationship object given by querySuggestion
@@ -145,7 +144,7 @@ class FacebookHorseShitAPI:
             "id": object["id"]
         }
         
-    def querySuggestions(self,cookie=_cookie,pageId='838617286180599'):
+    def querySuggestions(self,cookie,pageId='838617286180599'):
         print("querying", pageId)
 
         # Query suggestions given page id
@@ -211,6 +210,7 @@ if __name__ == '__main__':
     RABBIT_HOST = os.getenv('RABBIT_HOST', 'localhost')
     SEED_PAGE_NAME = os.getenv('SEED_ID', 'prachyagraphic')
     GROUP_NAME = os.getenv('GROUP_NAME', 'test')
+    COOKIE = os.getenv('COOKIE')
 
     print("using configuration", RABBIT_HOST, RABBIT_PWD, RABBIT_USR, int(RABBIT_PORT))
 
@@ -232,6 +232,6 @@ if __name__ == '__main__':
     instance = StokaInstance(connection,seed_page_object={
         "id": seed_id,
         "url": seed_url   
-    }, group_name=GROUP_NAME)
+    }, group_name=GROUP_NAME, cookie=COOKIE)
 
     instance.run()
