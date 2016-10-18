@@ -75,7 +75,8 @@ class StokaInstance:
             pdat = self.fbHorse.getPageData(object, self.cookie)
             self.astoka_progress = self.astoka_progress + 1
             self.save(pdat)
-        except Exception:
+        except Exception as ex:
+            print(ex)
             self.astoka_error = self.astoka_error + 1
 
         print("@astoka.progress ", self.astoka_progress)
@@ -137,10 +138,32 @@ class FacebookHorseShitAPI:
         # find regex match for post description
         pmatch = re.findall(r'{body:{text:"([^"]+)', res.text)
 
-        print(meta_description_content, lmatch[0])
-        return {
+        
+        imgmatch = re.findall(r'(https://scontent[^"]+320x320[^"]+)', res.text)
+        
+        posts = ""
+        for p in pmatch:
+            posts += str(p)
+
+        category = ''
+        if len(matches) > 0:
+            category = matches[0]
+
+        res = requests.get(object["url"] + "about/", verify=False)
+        res.encoding  = "utf-8"
+        emailmatch = re.findall(r'([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)', res.text.replace('&#064;', '@'))
+        
+        if len(emailmatch) == 0:
+            emailmatch = "-"
+        else:
+            emailmatch = emailmatch[0]
+
+        expose = {
             "title": dmatches[0],
-            "category": matches[0],
+            "category": category,
+            "posts": posts,
+            "emblem": imgmatch[0],
+            "email": emailmatch,
             "description": meta_description_content,
             "likes": int(lmatch[0].replace(",", "")),
             "mentions": int(tmatch[0].replace(",", "")),
@@ -148,9 +171,13 @@ class FacebookHorseShitAPI:
             "_title": object["title"],
             "id": object["id"]
         }
+
+        print(expose)
+
+        return expose
         
     def querySuggestions(self,cookie,pageId='838617286180599'):
-        print("querying", pageId)
+        
 
         # Query suggestions given page id
         # returns dict of (pageId, pageName, pageLink)
@@ -170,14 +197,15 @@ class FacebookHorseShitAPI:
         }
         
         url = "https://www.facebook.com/pages/?frompageid=" + str(pageId)
-        print(url)
+
+        print("querying", pageId, url)
         res = requests.get(url, verify=False, headers=headers )
         res.encoding  = "utf-8"
         body = res.text
-
         # find regex matches for 
         # pageID: string, pageName: string, pageProfileName: some sort of facebook's dom identifier
         matches = re.findall(r'pageID:([0-9]+),pageName:"([^"]+)".*?page_profile_name:{.*?(__elem.*?)"}', body)
+
         A = []
         for m in matches:
             # find the identifier referred to by pageProfileName
